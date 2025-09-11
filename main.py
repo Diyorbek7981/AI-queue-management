@@ -2,6 +2,8 @@ import cv2
 import os
 from datetime import datetime
 from ultralytics import YOLO
+from model import Person
+from database import session, engine
 
 # ==== Config ====
 MODEL_PATH = 'yolov8n.pt'
@@ -11,6 +13,8 @@ SERVING_MASK_PATH = 'pic/service.jpg'
 STUF_MASK_PATH = 'pic/staf.jpg'
 OUTPUT_DIR = 'output_videos'  # Video run bolgandan keyin uni saqlsh pathi
 os.makedirs(OUTPUT_DIR, exist_ok=True)
+
+session = session(bind=engine)
 
 
 # ==== Queue Tracker ====
@@ -54,13 +58,16 @@ class QueueTracker:
         results = self.model.track(frame, persist=True, classes=0, conf=0.5)[0]
         current_time = datetime.now()
         serving_count, waiting_count, stuff_count = 0, 0, 0
-        current_wait_times = []
 
         if results.boxes.id is None:
             return frame
 
+        active_ids = set()  # id larni tekshirish uchun (kadrda yoki kadrdan chiqib ketmagankigini)
+
         for box, track_id in zip(results.boxes.xyxy, results.boxes.id):
             track_id = int(track_id)
+
+            active_ids.add(track_id)
 
             x1, y1, x2, y2 = map(int, box[:4])  # odam kordinatasi 2  ta nuqta joylashuvi
             cx, cy = (x1 + x2) // 2, (y1 + y2) // 2  # odam kordinatasi markazi
@@ -100,16 +107,15 @@ class QueueTracker:
 
             # Status va rang
             if in_serving:
-                status = f"Serving: {self.service_time.get(track_id, 0):.1f}s"
+                status = f"Serving: {self.service_time.get(track_id, 0):.0f}s"
                 color = (0, 255, 0)
                 serving_count += 1
             elif in_waiting:
-                status = f"Waiting: {wait_time:.1f}s"
+                status = f"Waiting: {wait_time:.0f}s"
                 color = (0, 0, 255)
                 waiting_count += 1
-                current_wait_times.append(wait_time)
             elif in_stuff:
-                status = f"Stuff: {self.stuff_time.get(track_id, 0):.1f}s"
+                status = f"Stuff: {self.stuff_time.get(track_id, 0):.0f}s"
                 color = (255, 0, 0)
                 stuff_count += 1
             else:
@@ -121,8 +127,35 @@ class QueueTracker:
             cv2.putText(frame, f"#{track_id} {status}", (x1, y1 - 8),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.55, color, 2)
 
-        # O'rtacha kutish vaqti
-        # avg_wait = sum(current_wait_times) / len(current_wait_times) if current_wait_times else 0
+        # ✔️✔️ # Kadrdan chiqqan odamlarni aniqlash
+        finished_ids = set(self.enter_time.keys()) | set(self.start_service.keys()) | set(
+            self.stuff_enter_time.keys())
+        finished_ids -= active_ids  # endi faqat chiqib ketgan odamlar qoladi
+
+        print(finished_ids)
+        print(active_ids)
+        print(self.stuff_time)
+
+        if finished_ids is not None:
+            for i in finished_ids:
+                enter_time = self.enter_time.pop(i, None)
+                service_start = self.start_service.pop(i, None)
+                self.stuff_enter_time.pop(i, None)
+
+                wait_time = (current_time - enter_time).total_seconds() if enter_time else 0
+                service_time = (current_time - service_start).total_seconds() if service_start else 0
+
+                # === DB ga yozish ===
+                person = Person(
+                    track_id=i,
+                    enter_time=enter_time,
+                    wait_time=wait_time,
+                    service_start=service_start,
+                    service_time=service_time,
+                    exit_time=current_time
+                )
+                session.add(person)
+                session.commit()
 
         # Statistikani chiqarish
         cv2.putText(frame, f"Serving: {serving_count}", (30, 40),
@@ -131,25 +164,23 @@ class QueueTracker:
                     cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
         cv2.putText(frame, f"Stuff: {stuff_count}", (30, 120),
                     cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 0, 0), 2)
-        # cv2.putText(frame, f"Avg Wait: {avg_wait:.1f}s", (30, 120),
-        #             cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 0), 2)
 
-        # Mask overlay qilish — faqat o‘lcham mos bo‘lsa
-        # Mask overlay qilish — bu tasvir ustiga niqob (mask)ni qisman yoki shaffof tarzda qo‘yish
-        if self.waiting_mask is not None:
-            waiting_colored = cv2.merge([self.waiting_mask, self.waiting_mask * 0, self.waiting_mask * 0])
-            waiting_colored = cv2.resize(waiting_colored, (frame.shape[1], frame.shape[0]))
-            frame = cv2.addWeighted(frame, 1, waiting_colored, 0.2, 0)
-
-        if self.serving_mask is not None:
-            serving_colored = cv2.merge([self.serving_mask * 0, self.serving_mask, self.serving_mask * 0])
-            serving_colored = cv2.resize(serving_colored, (frame.shape[1], frame.shape[0]))
-            frame = cv2.addWeighted(frame, 1, serving_colored, 0.2, 0)
-
-        if self.stuf_mask is not None:
-            stuff_colored = cv2.merge([self.serving_mask * 0, self.serving_mask, self.serving_mask * 0])
-            stuff_colored = cv2.resize(stuff_colored, (frame.shape[1], frame.shape[0]))
-            frame = cv2.addWeighted(frame, 1, stuff_colored, 0.2, 0)
+        # ✔️ Mask overlay qilish — faqat o‘lcham mos bo‘lsa
+        # Mask overlay qilish — bu tasvir ustiga niqob (mask)ni qisman yoki shaffof tarzda qo‘yish (maskani boyab korsatasi)
+        # if self.waiting_mask is not None:
+        #     waiting_colored = cv2.merge([self.waiting_mask, self.waiting_mask * 0, self.waiting_mask * 0])
+        #     waiting_colored = cv2.resize(waiting_colored, (frame.shape[1], frame.shape[0]))
+        #     frame = cv2.addWeighted(frame, 1, waiting_colored, 0.2, 0)
+        #
+        # if self.serving_mask is not None:
+        #     serving_colored = cv2.merge([self.serving_mask * 0, self.serving_mask, self.serving_mask * 0])
+        #     serving_colored = cv2.resize(serving_colored, (frame.shape[1], frame.shape[0]))
+        #     frame = cv2.addWeighted(frame, 1, serving_colored, 0.2, 0)
+        #
+        # if self.stuf_mask is not None:
+        #     stuff_colored = cv2.merge([self.stuf_mask * 0, self.stuf_mask * 0, self.stuf_mask])
+        #     stuff_colored = cv2.resize(stuff_colored, (frame.shape[1], frame.shape[0]))
+        #     frame = cv2.addWeighted(frame, 1, stuff_colored, 0.2, 0)
 
         return frame
 
@@ -164,7 +195,6 @@ if not ret:
 
 height, width = frame.shape[:2]
 model = YOLO(MODEL_PATH)
-# exclude_ids = [4, 5]  # Xizmat ko‘rsatuvchilar track ID’lari
 
 # Classga malumotlarni yuborish
 tracker = QueueTracker(model, WAITING_MASK_PATH, SERVING_MASK_PATH, STUF_MASK_PATH, (width, height))
