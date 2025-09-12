@@ -37,7 +37,7 @@ class QueueTracker:
 
         # Kutish va xizmat vaqtlarini hisoblash uchun
         self.stuff_enter_time = {}  # Hodimlar kadrga kirgan vaqt
-        self.enter_time = {}  # Obyekt kadrga  kirgan vaqt
+        self.enter_time = {}  # Obyekt kadrga  kirgan vaqt  (kutish zonasi uchun)
         self.start_service = {}  # Xizmat ko‘rsatish jarayoni boshlangan vaqtni saqlaydi.
         self.service_time = {}  # Har bir ob’ektga xizmat ko‘rsatish uchun qancha vaqt ketganini sekundlarda saqlaydi.
         self.stuff_time = {}  # Hodimlar (staff) kadrda bo‘lgan jami vaqtni hisoblsh.
@@ -127,35 +127,47 @@ class QueueTracker:
             cv2.putText(frame, f"#{track_id} {status}", (x1, y1 - 8),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.55, color, 2)
 
-        # ✔️✔️ # Kadrdan chiqqan odamlarni aniqlash
+        #  ✔️ Kadrdan chiqqan odamlarni aniqlash
         finished_ids = set(self.enter_time.keys()) | set(self.start_service.keys()) | set(
             self.stuff_enter_time.keys())
-        finished_ids -= active_ids  # endi faqat chiqib ketgan odamlar qoladi
-
         print(finished_ids)
+        finished_ids -= active_ids  # endi faqat chiqib ketgan odamlar qoladi
         print(active_ids)
-        print(self.stuff_time)
+        print(finished_ids)
 
         if finished_ids is not None:
             for i in finished_ids:
-                enter_time = self.enter_time.pop(i, None)
-                service_start = self.start_service.pop(i, None)
+                self.enter_time.pop(i, None)
+                self.start_service.pop(i, None)
                 self.stuff_enter_time.pop(i, None)
 
-                wait_time = (current_time - enter_time).total_seconds() if enter_time else 0
-                service_time = (current_time - service_start).total_seconds() if service_start else 0
+                # Id yoqolgach osha frameni saqlab olish
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                save_path = os.path.join(OUTPUT_DIR, f"finished_{'_'.join(map(str, finished_ids))}_{timestamp}.jpg")
+                cv2.imwrite(save_path, frame)
+                print(f"Kadr saqlandi: {save_path}")
 
-                # === DB ga yozish ===
-                person = Person(
-                    track_id=i,
-                    enter_time=enter_time,
-                    wait_time=wait_time,
-                    service_start=service_start,
-                    service_time=service_time,
-                    exit_time=current_time
-                )
-                session.add(person)
-                session.commit()
+        #  👍 Data bazaga yozish
+        # if finished_ids is not None:
+        #     for i in finished_ids:
+        #         enter_time = self.enter_time.pop(i, None)
+        #         service_start = self.start_service.pop(i, None)
+        #         self.stuff_enter_time.pop(i, None)
+        #
+        #         wait_time = (current_time - enter_time).total_seconds() if enter_time else 0
+        #         service_time = (current_time - service_start).total_seconds() if service_start else 0
+        #
+        #         # === DB ga yozish ===
+        #         person = Person(
+        #             track_id=i,
+        #             enter_time=enter_time,
+        #             wait_time=wait_time,
+        #             service_start=service_start,
+        #             service_time=service_time,
+        #             exit_time=current_time
+        #         )
+        #         session.add(person)
+        #         session.commit()
 
         # Statistikani chiqarish
         cv2.putText(frame, f"Serving: {serving_count}", (30, 40),
@@ -167,25 +179,24 @@ class QueueTracker:
 
         # ✔️ Mask overlay qilish — faqat o‘lcham mos bo‘lsa
         # Mask overlay qilish — bu tasvir ustiga niqob (mask)ni qisman yoki shaffof tarzda qo‘yish (maskani boyab korsatasi)
-        # if self.waiting_mask is not None:
-        #     waiting_colored = cv2.merge([self.waiting_mask, self.waiting_mask * 0, self.waiting_mask * 0])
-        #     waiting_colored = cv2.resize(waiting_colored, (frame.shape[1], frame.shape[0]))
-        #     frame = cv2.addWeighted(frame, 1, waiting_colored, 0.2, 0)
-        #
-        # if self.serving_mask is not None:
-        #     serving_colored = cv2.merge([self.serving_mask * 0, self.serving_mask, self.serving_mask * 0])
-        #     serving_colored = cv2.resize(serving_colored, (frame.shape[1], frame.shape[0]))
-        #     frame = cv2.addWeighted(frame, 1, serving_colored, 0.2, 0)
-        #
-        # if self.stuf_mask is not None:
-        #     stuff_colored = cv2.merge([self.stuf_mask * 0, self.stuf_mask * 0, self.stuf_mask])
-        #     stuff_colored = cv2.resize(stuff_colored, (frame.shape[1], frame.shape[0]))
-        #     frame = cv2.addWeighted(frame, 1, stuff_colored, 0.2, 0)
+        if self.waiting_mask is not None:
+            waiting_colored = cv2.merge([self.waiting_mask, self.waiting_mask * 0, self.waiting_mask * 0])
+            waiting_colored = cv2.resize(waiting_colored, (frame.shape[1], frame.shape[0]))
+            frame = cv2.addWeighted(frame, 1, waiting_colored, 0.2, 0)
+
+        if self.serving_mask is not None:
+            serving_colored = cv2.merge([self.serving_mask * 0, self.serving_mask, self.serving_mask * 0])
+            serving_colored = cv2.resize(serving_colored, (frame.shape[1], frame.shape[0]))
+            frame = cv2.addWeighted(frame, 1, serving_colored, 0.2, 0)
+
+        if self.stuf_mask is not None:
+            stuff_colored = cv2.merge([self.stuf_mask * 0, self.stuf_mask * 0, self.stuf_mask])
+            stuff_colored = cv2.resize(stuff_colored, (frame.shape[1], frame.shape[0]))
+            frame = cv2.addWeighted(frame, 1, stuff_colored, 0.2, 0)
 
         return frame
 
 
-# ==== Init ====
 cap = cv2.VideoCapture(VIDEO_SOURCE)
 ret, frame = cap.read()
 
@@ -203,7 +214,6 @@ tracker = QueueTracker(model, WAITING_MASK_PATH, SERVING_MASK_PATH, STUF_MASK_PA
 fourcc = cv2.VideoWriter_fourcc(*'mp4v')
 out = cv2.VideoWriter(os.path.join(OUTPUT_DIR, 'queue_output_mask.mp4'), fourcc, 20, (width, height))
 
-# ==== Main Loop ====
 while cap.isOpened():
     ret, frame = cap.read()
     if not ret:
