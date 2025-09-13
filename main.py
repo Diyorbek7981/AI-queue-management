@@ -83,7 +83,19 @@ class QueueTracker:
                     self.enter_time[track_id] = current_time
                 wait_time = (current_time - self.enter_time[track_id]).total_seconds()
             else:
-                wait_time = 0
+                person = session.query(Person).filter_by(track_id=track_id).first()
+                wait_time = (current_time - self.enter_time.get(track_id, current_time)).total_seconds()
+                if person:
+                    if person.wait_time == 0:
+                        person.wait_time = wait_time
+                else:
+                    person = Person(
+                        track_id=track_id,
+                        enter_time=self.enter_time.get(track_id),
+                        wait_time=wait_time
+                    )
+                    session.add(person)
+                session.commit()
                 self.enter_time.pop(track_id, None)
 
             # Xizmat vaqtini hisoblash
@@ -92,6 +104,19 @@ class QueueTracker:
                     self.start_service[track_id] = current_time
                 self.service_time[track_id] = (current_time - self.start_service[track_id]).total_seconds()
             else:
+                person = session.query(Person).filter_by(track_id=track_id).first()
+                service_time = (current_time - self.start_service.get(track_id, current_time)).total_seconds()
+                if person:
+                    if person.service_time == 0:
+                        person.service_time = service_time
+                else:
+                    person = Person(
+                        track_id=track_id,
+                        service_start=self.start_service.get(track_id),
+                        service_time=service_time
+                    )
+                    session.add(person)
+                session.commit()
                 self.start_service.pop(track_id, None)
 
             # Hodimlar vaqtini hisoblash
@@ -128,46 +153,24 @@ class QueueTracker:
                         cv2.FONT_HERSHEY_SIMPLEX, 0.55, color, 2)
 
         #  ✔️ Kadrdan chiqqan odamlarni aniqlash
-        finished_ids = set(self.enter_time.keys()) | set(self.start_service.keys()) | set(
-            self.stuff_enter_time.keys())
-        print(finished_ids)
-        finished_ids -= active_ids  # endi faqat chiqib ketgan odamlar qoladi
-        print(active_ids)
-        print(finished_ids)
+        # finished_ids = set(self.enter_time.keys()) | set(self.start_service.keys()) | set(
+        #     self.stuff_enter_time.keys())
+        # print(finished_ids)
+        # finished_ids -= active_ids  # endi faqat chiqib ketgan odamlar qoladi
+        # print(active_ids)
+        # print(self.start_service)
 
-        if finished_ids is not None:
-            for i in finished_ids:
-                self.enter_time.pop(i, None)
-                self.start_service.pop(i, None)
-                self.stuff_enter_time.pop(i, None)
-
-                # Id yoqolgach osha frameni saqlab olish
-                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                save_path = os.path.join(OUTPUT_DIR, f"finished_{'_'.join(map(str, finished_ids))}_{timestamp}.jpg")
-                cv2.imwrite(save_path, frame)
-                print(f"Kadr saqlandi: {save_path}")
-
-        #  👍 Data bazaga yozish
         # if finished_ids is not None:
         #     for i in finished_ids:
-        #         enter_time = self.enter_time.pop(i, None)
-        #         service_start = self.start_service.pop(i, None)
+        #         self.enter_time.pop(i, None)
+        #         self.start_service.pop(i, None)
         #         self.stuff_enter_time.pop(i, None)
         #
-        #         wait_time = (current_time - enter_time).total_seconds() if enter_time else 0
-        #         service_time = (current_time - service_start).total_seconds() if service_start else 0
-        #
-        #         # === DB ga yozish ===
-        #         person = Person(
-        #             track_id=i,
-        #             enter_time=enter_time,
-        #             wait_time=wait_time,
-        #             service_start=service_start,
-        #             service_time=service_time,
-        #             exit_time=current_time
-        #         )
-        #         session.add(person)
-        #         session.commit()
+        #         # ❗ Id yoqolgach osha frameni saqlab olish
+        #         # timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        #         # save_path = os.path.join(OUTPUT_DIR, f"finished_{'_'.join(map(str, finished_ids))}_{timestamp}.jpg")
+        #         # cv2.imwrite(save_path, frame)
+        #         # print(f"Kadr saqlandi: {save_path}")
 
         # Statistikani chiqarish
         cv2.putText(frame, f"Serving: {serving_count}", (30, 40),

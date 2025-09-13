@@ -11,4 +11,3 @@ class Person(Base):
     wait_time = Column(Float, default=0)
     service_start = Column(DateTime, nullable=True)
     service_time = Column(Float, default=0)
-    exit_time = Column(DateTime, nullable=True)
