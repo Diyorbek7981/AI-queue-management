@@ -39,9 +39,8 @@ class QueueTracker:
         self.stuff_enter_time = {}  # Hodimlar kadrga kirgan vaqt
         self.enter_time = {}  # Obyekt kadrga  kirgan vaqt  (kutish zonasi uchun)
         self.start_service = {}  # Xizmat ko‘rsatish jarayoni boshlangan vaqtni saqlaydi.
-        self.service_time = {}  # Har bir ob’ektga xizmat ko‘rsatish uchun qancha vaqt ketganini sekundlarda saqlaydi.
-        self.stuff_time = {}  # Hodimlar (staff) kadrda bo‘lgan jami vaqtni hisoblsh.
         self.exclude_ids = set(exclude_ids) if exclude_ids else set()  # E’tiborga olinmaydigan ID’larni saqlaydi.
+        self.is_servise = {}  # servise korsatilgan yoki yoqligini tekshirish (True, False korinishida)
 
     # Aniqlangan odam markaziy nuqtasi maska ichidami yoki yoqligi tekshiriladi
     def is_inside_mask(self, mask, x, y):
@@ -72,52 +71,47 @@ class QueueTracker:
             x1, y1, x2, y2 = map(int, box[:4])  # odam kordinatasi 2  ta nuqta joylashuvi
             cx, cy = (x1 + x2) // 2, (y1 + y2) // 2  # odam kordinatasi markazi
 
+            # ❗ Birinchi kirganda enter_time ni yozish
+            person = session.query(Person).filter_by(track_id=track_id).first()
+            if not person:
+                person = Person(
+                    track_id=track_id,
+                    enter_time=current_time  # ✅ Kirish vaqti
+                )
+                session.add(person)
+                session.commit()
+
             # Hudud ichida ekanligini aniqlash
             in_serving = self.is_inside_mask(self.serving_mask, cx, cy)
             in_waiting = self.is_inside_mask(self.waiting_mask, cx, cy)
             in_stuff = self.is_inside_mask(self.stuf_mask, cx, cy)
 
             # Kutish vaqtini hisoblash
-            if in_waiting:
+            if in_waiting and not self.is_servise.get(track_id, False):
                 if track_id not in self.enter_time:
                     self.enter_time[track_id] = current_time
                 wait_time = (current_time - self.enter_time[track_id]).total_seconds()
             else:
-                person = session.query(Person).filter_by(track_id=track_id).first()
                 wait_time = (current_time - self.enter_time.get(track_id, current_time)).total_seconds()
-                if person:
-                    if person.wait_time == 0:
-                        person.wait_time = wait_time
-                else:
-                    person = Person(
-                        track_id=track_id,
-                        enter_time=self.enter_time.get(track_id),
-                        wait_time=wait_time
-                    )
-                    session.add(person)
-                session.commit()
-                self.enter_time.pop(track_id, None)
+                person = session.query(Person).filter_by(track_id=track_id).first()
+                if not self.is_servise.get(track_id, False):
+                    person.wait_time = wait_time
+                    session.commit()
 
             # Xizmat vaqtini hisoblash
             if in_serving:
                 if track_id not in self.start_service:
                     self.start_service[track_id] = current_time
-                self.service_time[track_id] = (current_time - self.start_service[track_id]).total_seconds()
+                service_secs = (current_time - self.start_service[track_id]).total_seconds()
+
+                if service_secs >= 5:
+                    self.is_servise[track_id] = True
             else:
+                service_secs = (current_time - self.start_service.get(track_id, current_time)).total_seconds()
                 person = session.query(Person).filter_by(track_id=track_id).first()
-                service_time = (current_time - self.start_service.get(track_id, current_time)).total_seconds()
-                if person:
-                    if person.service_time == 0:
-                        person.service_time = service_time
-                else:
-                    person = Person(
-                        track_id=track_id,
-                        service_start=self.start_service.get(track_id),
-                        service_time=service_time
-                    )
-                    session.add(person)
-                session.commit()
-                self.start_service.pop(track_id, None)
+                if person.service_time == 0:
+                    person.service_time = service_secs
+                    session.commit()
 
             # Hodimlar vaqtini hisoblash
             if in_stuff:
@@ -125,22 +119,22 @@ class QueueTracker:
                     # Agar hodim birinchi marta kadrga kirsa — vaqtni saqlaymiz
                     self.stuff_enter_time[track_id] = current_time
                 # Hodim kadrga kirganidan beri qancha vaqt o'tganini hisoblaymiz
-                self.stuff_time[track_id] = (current_time - self.stuff_enter_time[track_id]).total_seconds()
+                stuff_time = (current_time - self.stuff_enter_time[track_id]).total_seconds()
             else:
                 # Hodim kadrdan chiqib ketgan bo'lsa, vaqtni tozalaymiz
                 self.stuff_enter_time.pop(track_id, None)
 
             # Status va rang
             if in_serving:
-                status = f"Serving: {self.service_time.get(track_id, 0):.0f}s"
+                status = f"Serving: {service_secs:.0f}s"
                 color = (0, 255, 0)
                 serving_count += 1
-            elif in_waiting:
+            elif in_waiting and not self.is_servise.get(track_id, False):
                 status = f"Waiting: {wait_time:.0f}s"
                 color = (0, 0, 255)
                 waiting_count += 1
             elif in_stuff:
-                status = f"Stuff: {self.stuff_time.get(track_id, 0):.0f}s"
+                status = f"Stuff: {stuff_time:.0f}s"
                 color = (255, 0, 0)
                 stuff_count += 1
             else:
@@ -153,19 +147,23 @@ class QueueTracker:
                         cv2.FONT_HERSHEY_SIMPLEX, 0.55, color, 2)
 
         #  ✔️ Kadrdan chiqqan odamlarni aniqlash
-        # finished_ids = set(self.enter_time.keys()) | set(self.start_service.keys()) | set(
-        #     self.stuff_enter_time.keys())
-        # print(finished_ids)
-        # finished_ids -= active_ids  # endi faqat chiqib ketgan odamlar qoladi
-        # print(active_ids)
-        # print(self.start_service)
+        finished_ids = set(self.enter_time.keys()) | set(self.start_service.keys()) | set(
+            self.stuff_enter_time.keys())
+        print(finished_ids)
+        finished_ids -= active_ids  # endi faqat chiqib ketgan odamlar qoladi
 
-        # if finished_ids is not None:
-        #     for i in finished_ids:
-        #         self.enter_time.pop(i, None)
-        #         self.start_service.pop(i, None)
-        #         self.stuff_enter_time.pop(i, None)
-        #
+        if finished_ids is not None:
+            for i in finished_ids:
+
+                person = session.query(Person).filter_by(track_id=i).first()
+                if person and person.exit_time is None:
+                    person.exit_time = current_time
+                    session.commit()
+
+                self.enter_time.pop(i, None)
+                self.start_service.pop(i, None)
+                self.stuff_enter_time.pop(i, None)
+
         #         # ❗ Id yoqolgach osha frameni saqlab olish
         #         # timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         #         # save_path = os.path.join(OUTPUT_DIR, f"finished_{'_'.join(map(str, finished_ids))}_{timestamp}.jpg")
