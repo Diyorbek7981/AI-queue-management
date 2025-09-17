@@ -19,7 +19,7 @@ session = session(bind=engine)
 
 # ==== Queue Tracker ====
 class QueueTracker:
-    def __init__(self, model, waiting_mask_path, serving_mask_path, stuf_mask_path, frame_size, exclude_ids=None):
+    def __init__(self, model, waiting_mask_path, serving_mask_path, stuf_mask_path, frame_size):
         self.model = model
 
         # Maskalarni grayscale holatda yuklab, videoga moslashtiramiz
@@ -39,7 +39,6 @@ class QueueTracker:
         self.stuff_enter_time = {}  # Hodimlar kadrga kirgan vaqt
         self.enter_time = {}  # Obyekt kadrga  kirgan vaqt  (kutish zonasi uchun)
         self.start_service = {}  # Xizmat ko‘rsatish jarayoni boshlangan vaqtni saqlaydi.
-        self.exclude_ids = set(exclude_ids) if exclude_ids else set()  # E’tiborga olinmaydigan ID’larni saqlaydi.
         self.is_servise = {}  # servise korsatilgan yoki yoqligini tekshirish (True, False korinishida)
 
     # Aniqlangan odam markaziy nuqtasi maska ichidami yoki yoqligi tekshiriladi
@@ -76,7 +75,7 @@ class QueueTracker:
             if not person:
                 person = Person(
                     track_id=track_id,
-                    enter_time=current_time  # ✅ Kirish vaqti
+                    enter_time=current_time
                 )
                 session.add(person)
                 session.commit()
@@ -116,13 +115,13 @@ class QueueTracker:
             # Hodimlar vaqtini hisoblash
             if in_stuff:
                 if track_id not in self.stuff_enter_time:
-                    # Agar hodim birinchi marta kadrga kirsa — vaqtni saqlaymiz
+                    # Agar hodim birinchi marta hududga kirsa — vaqtni saqlaymiz
                     self.stuff_enter_time[track_id] = current_time
                 # Hodim kadrga kirganidan beri qancha vaqt o'tganini hisoblaymiz
                 stuff_time = (current_time - self.stuff_enter_time[track_id]).total_seconds()
-            else:
-                # Hodim kadrdan chiqib ketgan bo'lsa, vaqtni tozalaymiz
-                self.stuff_enter_time.pop(track_id, None)
+            # else:
+            #     # Hodim hududdan chiqib ketgan bo'lsa, vaqtni tozalaymiz
+            #     self.stuff_enter_time.pop(track_id, None)
 
             # Status va rang
             if in_serving:
@@ -149,7 +148,6 @@ class QueueTracker:
         #  ✔️ Kadrdan chiqqan odamlarni aniqlash
         finished_ids = set(self.enter_time.keys()) | set(self.start_service.keys()) | set(
             self.stuff_enter_time.keys())
-        print(finished_ids)
         finished_ids -= active_ids  # endi faqat chiqib ketgan odamlar qoladi
 
         if finished_ids is not None:
@@ -164,11 +162,11 @@ class QueueTracker:
                 self.start_service.pop(i, None)
                 self.stuff_enter_time.pop(i, None)
 
-        #         # ❗ Id yoqolgach osha frameni saqlab olish
-        #         # timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        #         # save_path = os.path.join(OUTPUT_DIR, f"finished_{'_'.join(map(str, finished_ids))}_{timestamp}.jpg")
-        #         # cv2.imwrite(save_path, frame)
-        #         # print(f"Kadr saqlandi: {save_path}")
+                # ❗ Id yoqolgach osha frameni saqlab olish
+                # timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                # save_path = os.path.join(OUTPUT_DIR, f"finished_{'_'.join(map(str, finished_ids))}_{timestamp}.jpg")
+                # cv2.imwrite(save_path, frame)
+                # print(f"Kadr saqlandi: {save_path}")
 
         # Statistikani chiqarish
         cv2.putText(frame, f"Serving: {serving_count}", (30, 40),
